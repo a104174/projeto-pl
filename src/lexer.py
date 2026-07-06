@@ -40,9 +40,6 @@ reserved = {
 
     "div": "DIV",
     "mod": "MOD",
-
-    "function": "FUNCTION",
-    "procedure": "PROCEDURE",
 }
 
 

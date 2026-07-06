@@ -12,6 +12,9 @@ except ImportError:
 # Precedência dos operadores.
 # Quanto mais em baixo, maior a prioridade.
 precedence = (
+    ("nonassoc", "IFX"),
+    ("nonassoc", "ELSE"),
+
     ("left", "OR"),
     ("left", "AND"),
     ("right", "NOT"),
@@ -285,7 +288,7 @@ def p_if_statement_with_else(p):
 
 def p_if_statement_without_else(p):
     """
-    if_statement : IF expression THEN statement
+    if_statement : IF expression THEN statement %prec IFX
     """
     p[0] = ("if", p[2], p[4], None)
 
