@@ -55,6 +55,12 @@ def build_symbol_table(declarations):
                         f"Array '{name}' tem limites inválidos: {start}..{end}"
                     )
 
+                if element_type != "integer":
+                    errors.append(
+                        f"Array '{name}' tem tipo de elemento não suportado: "
+                        f"{element_type}; apenas integer é suportado"
+                    )
+
                 symbols[name] = {
                     "kind": "array",
                     "type": element_type,

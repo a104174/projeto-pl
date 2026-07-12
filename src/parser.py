@@ -98,9 +98,24 @@ def p_type_simple(p):
 
 def p_type_array(p):
     """
-    type : ARRAY LBRACKET NUMBER DOTDOT NUMBER RBRACKET OF simple_type
+    type : ARRAY LBRACKET integer_literal DOTDOT integer_literal RBRACKET OF simple_type
     """
     p[0] = ("array", p[3], p[5], p[8])
+
+
+def p_integer_literal_positive(p):
+    """
+    integer_literal : NUMBER
+                    | PLUS NUMBER
+    """
+    p[0] = p[len(p) - 1]
+
+
+def p_integer_literal_negative(p):
+    """
+    integer_literal : MINUS NUMBER
+    """
+    p[0] = -p[2]
 
 
 def p_simple_type_integer(p):

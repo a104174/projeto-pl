@@ -35,10 +35,9 @@ class CodeGenerator:
             entry = dict(info)
             entry["offset"] = next_offset
 
-            if info["kind"] == "array":
-                next_offset += info["size"]
-            else:
-                next_offset += 1
+            # Um array ocupa uma única posição global, onde fica o endereço
+            # base do bloco criado por ALLOCN.
+            next_offset += 1
 
             layout[name] = entry
 
@@ -74,21 +73,31 @@ class CodeGenerator:
         )
 
         for name, info in ordered_vars:
-            if info["kind"] == "array":
-                if info["type"] in ("integer", "boolean"):
-                    self.emit(f"PUSHN {info['size']}")
-                else:
-                    for _ in range(info["size"]):
-                        self.emit('PUSHS ""')
+            if info["kind"] == "array" or info["type"] in ("integer", "boolean"):
+                self.emit("PUSHI 0")
+            elif info["type"] == "string":
+                self.emit('PUSHS ""')
             else:
-                if info["type"] in ("integer", "boolean"):
-                    self.emit("PUSHI 0")
-                elif info["type"] == "string":
-                    self.emit('PUSHS ""')
-                else:
-                    raise CodeGenerationError(
-                        f"Tipo não suportado: {info['type']}"
-                    )
+                raise CodeGenerationError(
+                    f"Tipo não suportado: {info['type']}"
+                )
+
+    def emit_array_allocation(self):
+        """Aloca no heap os arrays e guarda a base na posição global."""
+        for info in self.layout.values():
+            if info["kind"] == "array":
+                self.emit(f"PUSHI {info['size']}")
+                self.emit("ALLOCN")
+                self.emit(f"STOREG {info['offset']}")
+
+    def generate_array_address(self, name, index_expression):
+        """Coloca na stack a base e o índice Pascal normalizado."""
+        info = self.layout[name]
+        self.emit(f"PUSHG {info['offset']}")
+        self.generate_expression(index_expression)
+        if info["start"] != 0:
+            self.emit(f"PUSHI {info['start']}")
+            self.emit("SUB")
 
     def generate_program(self, ast):
         if ast[0] != "program":
@@ -98,6 +107,7 @@ class CodeGenerator:
 
         self.emit_global_initialization()
         self.emit("START")
+        self.emit_array_allocation()
         self.generate_statement(block)
         self.emit("STOP")
 
@@ -113,14 +123,24 @@ class CodeGenerator:
 
         elif kind == "assign":
             _, target, expression = statement
-            self.generate_expression(expression)
-            self.store_variable(target)
+            if target[0] == "array_access":
+                _, name, index_expression = target
+                self.generate_array_address(name, index_expression)
+                self.generate_expression(expression)
+                self.emit("STOREN")
+            else:
+                self.generate_expression(expression)
+                self.store_variable(target)
 
         elif kind == "readln":
             _, variables = statement
 
             for variable in variables:
                 var_type = self.variable_type(variable)
+
+                if variable[0] == "array_access":
+                    _, name, index_expression = variable
+                    self.generate_array_address(name, index_expression)
 
                 self.emit("READ")
 
@@ -133,7 +153,10 @@ class CodeGenerator:
                         f"readln não suportado para tipo {var_type}"
                     )
 
-                self.store_variable(variable)
+                if variable[0] == "array_access":
+                    self.emit("STOREN")
+                else:
+                    self.store_variable(variable)
 
         elif kind == "writeln":
             _, expressions = statement
@@ -264,9 +287,7 @@ class CodeGenerator:
             return
 
         if kind == "array_access":
-            raise CodeGenerationError(
-                "Atribuição a arrays ainda não está suportada nesta versão"
-            )
+            raise CodeGenerationError("Armazenamento de array sem endereço")
 
         raise CodeGenerationError(f"Variável inválida: {variable}")
 
@@ -291,9 +312,9 @@ class CodeGenerator:
             self.emit(f"PUSHG {offset}")
 
         elif kind == "array_access":
-            raise CodeGenerationError(
-                "Acesso a arrays ainda não está suportado nesta versão"
-            )
+            _, name, index_expression = expression
+            self.generate_array_address(name, index_expression)
+            self.emit("LOADN")
 
         elif kind == "unop":
             _, operator, operand = expression

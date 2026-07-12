@@ -5,3 +5,4 @@ __pycache__/
 .vscode/
 parsetab.py
 parser.out
+docs/course_reference/
