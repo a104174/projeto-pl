@@ -23,6 +23,10 @@ semântica -> geração de código -> EWVM`:
 - `if`/`else`, `while`, `for to` e `for downto`;
 - `readln` e `writeln`;
 - arrays unidimensionais estáticos de `integer`;
+- funções de topo com parâmetros por valor e retorno por atribuição ao nome;
+- parâmetros e variáveis locais escalares, com resolução local/global;
+- função built-in `length` para strings;
+- indexação de strings para leitura com `CHARAT`;
 - comentários `{ ... }`, `(* ... *)` e `// ...`.
 
 Os arrays usam a forma `array[limite_inferior..limite_superior] of integer`.
@@ -54,6 +58,14 @@ Guardar o resultado num ficheiro:
 .venv/bin/python compiler.py examples/soma_array.pas -o soma_array.vm
 ```
 
+Modos de diagnóstico para inspecionar as fases do compilador:
+
+```sh
+.venv/bin/python compiler.py --tokens examples/fatorial.pas
+.venv/bin/python compiler.py --ast examples/fatorial.pas
+.venv/bin/python compiler.py --symbols examples/fatorial.pas
+```
+
 ## Testes
 
 ```sh
@@ -66,7 +78,11 @@ Guardar o resultado num ficheiro:
 - `examples/fatorial.pas`: leitura, expressões e ciclo `for`;
 - `examples/numero_primo.pas`: booleanos, `while`, `if`/`else`, `div`, `mod` e `and`;
 - `examples/soma_array.pas`: alocação, leitura e soma de elementos de um array;
+- `examples/binario_para_inteiro.pas`: funções, `length` e indexação de strings;
 - `examples/erro_semantico.pas`: utilização intencional de variável não declarada.
+
+O relatório de implementação está em
+[docs/technical_report.md](docs/technical_report.md).
 
 ## Limitações
 
@@ -75,5 +91,13 @@ Guardar o resultado num ficheiro:
 - índices literais são verificados estaticamente, mas não existe verificação
   dinâmica de limites para índices calculados;
 - o tipo `real` não está implementado;
-- `function` e `procedure` ainda não estão implementadas;
+- funções aninhadas, `procedure`, parâmetros por referência, arrays locais e
+  arrays como parâmetros não estão implementados;
+- a indexação de strings é apenas para leitura; atribuição e `readln` de um
+  carácter indexado não são suportados;
 - não existem arrays multidimensionais nem otimizações.
+
+Internamente, um acesso como `texto[i]` tem o tipo semântico `char`, que não é
+um tipo Pascal declarável. Como Pascal usa índices base 1 neste subconjunto e
+`CHARAT` usa base zero, o compilador subtrai 1 ao índice. Comparações com
+literais de um carácter usam `CHRCODE` para comparar os códigos ASCII.

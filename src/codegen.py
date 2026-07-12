@@ -18,29 +18,12 @@ class CodeGenerator:
         self.layout = self.build_memory_layout(symbols)
         self.instructions = []
         self.label_counter = 0
+        self.current_function = None
 
     def build_memory_layout(self, symbols):
-        """
-        Atribui um offset de memória global a cada variável.
-
-        Exemplo:
-        n   -> offset 0
-        i   -> offset 1
-        fat -> offset 2
-        """
         layout = {}
-        next_offset = 0
-
-        for name, info in symbols.items():
-            entry = dict(info)
-            entry["offset"] = next_offset
-
-            # Um array ocupa uma única posição global, onde fica o endereço
-            # base do bloco criado por ALLOCN.
-            next_offset += 1
-
-            layout[name] = entry
-
+        for offset, (name, info) in enumerate(symbols.items()):
+            layout[name] = dict(info, offset=offset)
         return layout
 
     def emit(self, instruction):
@@ -53,37 +36,41 @@ class CodeGenerator:
     def escape_string(self, value):
         return value.replace("\\", "\\\\").replace('"', '\\"')
 
+    def context(self):
+        if self.current_function is None:
+            return None
+        return {"name": self.current_function[0], "function": self.current_function[1]}
+
     def expression_type(self, expression):
         errors = []
-        expr_type = infer_expression_type(expression, self.symbols, errors)
-
+        result = infer_expression_type(expression, self.symbols, errors, self.context())
         if errors:
             raise CodeGenerationError("; ".join(errors))
+        return result
 
-        return expr_type
+    def resolve_storage(self, name):
+        if self.current_function:
+            function = self.current_function[1]
+            if name in function["scope"]:
+                return "L", function["scope"][name]
+            if name == self.current_function[0]:
+                return "L", {
+                    "type": function["return_type"],
+                    "index": function["return_index"],
+                    "kind": "return",
+                }
+        if name in self.layout:
+            return "G", self.layout[name]
+        raise CodeGenerationError(f"Símbolo sem layout: {name}")
+
+    def emit_default_value(self, value_type):
+        self.emit('PUSHS ""' if value_type == "string" else "PUSHI 0")
 
     def emit_global_initialization(self):
-        """
-        Reserva espaço para as variáveis globais antes do START.
-        Na EWVM, variáveis globais são guardadas na stack global.
-        """
-        ordered_vars = sorted(
-            self.layout.items(),
-            key=lambda item: item[1]["offset"]
-        )
-
-        for name, info in ordered_vars:
-            if info["kind"] == "array" or info["type"] in ("integer", "boolean"):
-                self.emit("PUSHI 0")
-            elif info["type"] == "string":
-                self.emit('PUSHS ""')
-            else:
-                raise CodeGenerationError(
-                    f"Tipo não suportado: {info['type']}"
-                )
+        for info in self.layout.values():
+            self.emit_default_value(info["type"])
 
     def emit_array_allocation(self):
-        """Aloca no heap os arrays e guarda a base na posição global."""
         for info in self.layout.values():
             if info["kind"] == "array":
                 self.emit(f"PUSHI {info['size']}")
@@ -91,319 +78,216 @@ class CodeGenerator:
                 self.emit(f"STOREG {info['offset']}")
 
     def generate_array_address(self, name, index_expression):
-        """Coloca na stack a base e o índice Pascal normalizado."""
-        info = self.layout[name]
-        self.emit(f"PUSHG {info['offset']}")
+        region, info = self.resolve_storage(name)
+        self.emit(f"PUSH{region} {info['offset'] if region == 'G' else info['index']}")
         self.generate_expression(index_expression)
         if info["start"] != 0:
             self.emit(f"PUSHI {info['start']}")
             self.emit("SUB")
 
+    def generate_string_access(self, name, index_expression):
+        """Gera um acesso Pascal base 1 usando CHARAT, que é base zero."""
+        region, info = self.resolve_storage(name)
+        index = info["offset"] if region == "G" else info["index"]
+        self.emit(f"PUSH{region} {index}")
+        self.generate_expression(index_expression)
+        self.emit("PUSHI 1")
+        self.emit("SUB")
+        self.emit("CHARAT")
+
+    def generate_indexed_access(self, name, index_expression):
+        _, info = self.resolve_storage(name)
+        if info["kind"] == "array":
+            self.generate_array_address(name, index_expression)
+            self.emit("LOADN")
+        elif info["type"] == "string":
+            self.generate_string_access(name, index_expression)
+        else:
+            raise CodeGenerationError(f"Símbolo '{name}' não pode ser indexado")
+
     def generate_program(self, ast):
         if ast[0] != "program":
             raise CodeGenerationError("AST inválida: raiz não é program")
-
-        _, program_name, declarations, block = ast
-
+        _, program_name, declarations, function_declarations, block = ast
         self.emit_global_initialization()
         self.emit("START")
         self.emit_array_allocation()
         self.generate_statement(block)
         self.emit("STOP")
-
+        for declaration in function_declarations:
+            self.generate_function(declaration)
         return "\n".join(self.instructions) + "\n"
+
+    def generate_function(self, declaration):
+        _, name, parameters, return_node, local_declarations, body = declaration
+        function = self.symbols.functions[name]
+        self.current_function = (name, function)
+        self.emit(f"{function['label']}:")
+        for info in function["locals"].values():
+            self.emit_default_value(info["type"])
+        self.generate_statement(body)
+        self.emit("RETURN")
+        self.current_function = None
 
     def generate_statement(self, statement):
         kind = statement[0]
-
         if kind == "block":
-            _, statements = statement
-            for stmt in statements:
+            for stmt in statement[1]:
                 self.generate_statement(stmt)
-
         elif kind == "assign":
             _, target, expression = statement
             if target[0] == "array_access":
-                _, name, index_expression = target
-                self.generate_array_address(name, index_expression)
+                self.generate_array_address(target[1], target[2])
                 self.generate_expression(expression)
                 self.emit("STOREN")
             else:
                 self.generate_expression(expression)
                 self.store_variable(target)
-
         elif kind == "readln":
-            _, variables = statement
-
-            for variable in variables:
-                var_type = self.variable_type(variable)
-
+            for variable in statement[1]:
                 if variable[0] == "array_access":
-                    _, name, index_expression = variable
-                    self.generate_array_address(name, index_expression)
-
+                    self.generate_array_address(variable[1], variable[2])
+                var_type = self.variable_type(variable)
                 self.emit("READ")
-
                 if var_type == "integer":
                     self.emit("ATOI")
-                elif var_type == "string":
-                    pass
-                else:
-                    raise CodeGenerationError(
-                        f"readln não suportado para tipo {var_type}"
-                    )
-
+                elif var_type != "string":
+                    raise CodeGenerationError(f"readln não suportado para tipo {var_type}")
                 if variable[0] == "array_access":
                     self.emit("STOREN")
                 else:
                     self.store_variable(variable)
-
         elif kind == "writeln":
-            _, expressions = statement
-
-            for expression in expressions:
+            for expression in statement[1]:
                 expr_type = self.expression_type(expression)
-
                 self.generate_expression(expression)
-
-                if expr_type == "integer":
-                    self.emit("WRITEI")
-                elif expr_type == "boolean":
-                    self.emit("WRITEI")
-                elif expr_type == "string":
-                    self.emit("WRITES")
-                else:
-                    raise CodeGenerationError(
-                        f"writeln não suportado para tipo {expr_type}"
-                    )
-
+                self.emit("WRITES" if expr_type == "string" else "WRITEI")
             self.emit("WRITELN")
-
         elif kind == "if":
             _, condition, then_stmt, else_stmt = statement
-
-            else_label = self.new_label("ELSE")
-            end_label = self.new_label("ENDIF")
-
+            else_label, end_label = self.new_label("ELSE"), self.new_label("ENDIF")
             self.generate_expression(condition)
             self.emit(f"JZ {else_label}")
-
             self.generate_statement(then_stmt)
             self.emit(f"JUMP {end_label}")
-
             self.emit(f"{else_label}:")
             if else_stmt is not None:
                 self.generate_statement(else_stmt)
-
             self.emit(f"{end_label}:")
-
         elif kind == "while":
             _, condition, body = statement
-
-            start_label = self.new_label("WHILE")
-            end_label = self.new_label("ENDWHILE")
-
+            start_label, end_label = self.new_label("WHILE"), self.new_label("ENDWHILE")
             self.emit(f"{start_label}:")
             self.generate_expression(condition)
             self.emit(f"JZ {end_label}")
-
             self.generate_statement(body)
             self.emit(f"JUMP {start_label}")
             self.emit(f"{end_label}:")
-
         elif kind == "for":
-            _, var_name, start_expr, direction, end_expr, body = statement
-
-            if var_name not in self.layout:
-                raise CodeGenerationError(
-                    f"Variável de controlo '{var_name}' não declarada"
-                )
-
-            var_offset = self.layout[var_name]["offset"]
-
-            start_label = self.new_label("FOR")
-            end_label = self.new_label("ENDFOR")
-
-            # i := valor inicial
+            _, name, start_expr, direction, end_expr, body = statement
+            region, info = self.resolve_storage(name)
+            index = info["offset"] if region == "G" else info["index"]
+            start_label, end_label = self.new_label("FOR"), self.new_label("ENDFOR")
             self.generate_expression(start_expr)
-            self.emit(f"STOREG {var_offset}")
-
+            self.emit(f"STORE{region} {index}")
             self.emit(f"{start_label}:")
-
-            # condição: i <= fim   ou   i >= fim
-            self.emit(f"PUSHG {var_offset}")
+            self.emit(f"PUSH{region} {index}")
             self.generate_expression(end_expr)
-
-            if direction == "to":
-                self.emit("INFEQ")
-            elif direction == "downto":
-                self.emit("SUPEQ")
-            else:
-                raise CodeGenerationError(
-                    f"Direção de for desconhecida: {direction}"
-                )
-
+            self.emit("INFEQ" if direction == "to" else "SUPEQ")
             self.emit(f"JZ {end_label}")
-
             self.generate_statement(body)
-
-            # incremento/decremento
-            self.emit(f"PUSHG {var_offset}")
+            self.emit(f"PUSH{region} {index}")
             self.emit("PUSHI 1")
-
-            if direction == "to":
-                self.emit("ADD")
-            else:
-                self.emit("SUB")
-
-            self.emit(f"STOREG {var_offset}")
-
+            self.emit("ADD" if direction == "to" else "SUB")
+            self.emit(f"STORE{region} {index}")
             self.emit(f"JUMP {start_label}")
             self.emit(f"{end_label}:")
-
         else:
             raise CodeGenerationError(f"Statement não suportado: {statement}")
 
     def variable_type(self, variable):
-        kind = variable[0]
-
-        if kind == "var":
-            _, name = variable
-            return self.symbols[name]["type"]
-
-        if kind == "array_access":
-            _, name, index_expr = variable
-            return self.symbols[name]["type"]
-
-        raise CodeGenerationError(f"Variável inválida: {variable}")
+        _, info = self.resolve_storage(variable[1])
+        return info["type"]
 
     def store_variable(self, variable):
-        kind = variable[0]
+        _, name = variable
+        region, info = self.resolve_storage(name)
+        index = info["offset"] if region == "G" else info["index"]
+        self.emit(f"STORE{region} {index}")
 
-        if kind == "var":
-            _, name = variable
-            offset = self.layout[name]["offset"]
-            self.emit(f"STOREG {offset}")
+    def generate_call(self, name, arguments):
+        if name == "length":
+            self.generate_expression(arguments[0])
+            self.emit("STRLEN")
             return
-
-        if kind == "array_access":
-            raise CodeGenerationError("Armazenamento de array sem endereço")
-
-        raise CodeGenerationError(f"Variável inválida: {variable}")
+        function = self.symbols.functions[name]
+        self.emit_default_value(function["return_type"])
+        for argument in arguments:
+            self.generate_expression(argument)
+        self.emit(f"PUSHA {function['label']}")
+        self.emit("CALL")
+        self.emit(f"POP {len(arguments)}")
 
     def generate_expression(self, expression):
         kind = expression[0]
-
-        if kind == "int":
-            _, value = expression
-            self.emit(f"PUSHI {value}")
-
-        elif kind == "string":
-            _, value = expression
-            self.emit(f'PUSHS "{self.escape_string(value)}"')
-
-        elif kind == "bool":
-            _, value = expression
-            self.emit("PUSHI 1" if value else "PUSHI 0")
-
+        if kind == "int": self.emit(f"PUSHI {expression[1]}")
+        elif kind == "string": self.emit(f'PUSHS "{self.escape_string(expression[1])}"')
+        elif kind == "bool": self.emit("PUSHI 1" if expression[1] else "PUSHI 0")
         elif kind == "var":
-            _, name = expression
-            offset = self.layout[name]["offset"]
-            self.emit(f"PUSHG {offset}")
-
+            region, info = self.resolve_storage(expression[1])
+            index = info["offset"] if region == "G" else info["index"]
+            self.emit(f"PUSH{region} {index}")
         elif kind == "array_access":
-            _, name, index_expression = expression
-            self.generate_array_address(name, index_expression)
-            self.emit("LOADN")
-
+            self.generate_indexed_access(expression[1], expression[2])
+        elif kind == "call":
+            self.generate_call(expression[1], expression[2])
         elif kind == "unop":
-            _, operator, operand = expression
-
-            if operator == "-":
+            if expression[1] == "-":
                 self.emit("PUSHI 0")
-                self.generate_expression(operand)
+                self.generate_expression(expression[2])
                 self.emit("SUB")
-
-            elif operator == "not":
-                self.generate_expression(operand)
-                self.emit("NOT")
-
             else:
-                raise CodeGenerationError(
-                    f"Operador unário não suportado: {operator}"
-                )
-
+                self.generate_expression(expression[2])
+                self.emit("NOT")
         elif kind == "binop":
             _, operator, left, right = expression
-
+            left_type = self.expression_type(left)
+            right_type = self.expression_type(right)
             self.generate_expression(left)
+            if operator in {"=", "<>"} and left_type == "string" and right_type == "char":
+                self.emit("CHRCODE")
             self.generate_expression(right)
-
-            if operator == "+":
-                self.emit("ADD")
-            elif operator == "-":
-                self.emit("SUB")
-            elif operator == "*":
-                self.emit("MUL")
-            elif operator in ("/", "div"):
-                self.emit("DIV")
-            elif operator == "mod":
-                self.emit("MOD")
-
-            elif operator == "=":
-                self.emit("EQUAL")
-            elif operator == "<>":
+            if operator in {"=", "<>"} and right_type == "string" and left_type == "char":
+                self.emit("CHRCODE")
+            instructions = {
+                "+": "ADD", "-": "SUB", "*": "MUL", "/": "DIV", "div": "DIV",
+                "mod": "MOD", "=": "EQUAL", "<": "INF", "<=": "INFEQ",
+                ">": "SUP", ">=": "SUPEQ", "and": "AND", "or": "OR",
+            }
+            if operator == "<>":
                 self.emit("EQUAL")
                 self.emit("NOT")
-            elif operator == "<":
-                self.emit("INF")
-            elif operator == "<=":
-                self.emit("INFEQ")
-            elif operator == ">":
-                self.emit("SUP")
-            elif operator == ">=":
-                self.emit("SUPEQ")
-
-            elif operator == "and":
-                self.emit("AND")
-            elif operator == "or":
-                self.emit("OR")
-
             else:
-                raise CodeGenerationError(
-                    f"Operador binário não suportado: {operator}"
-                )
-
+                self.emit(instructions[operator])
         else:
             raise CodeGenerationError(f"Expressão não suportada: {expression}")
 
 
 def generate_program(ast):
-    symbols, semantic_errors = check_program(ast)
-
-    if semantic_errors:
-        raise CodeGenerationError(
-            "Erros semânticos:\n" +
-            "\n".join(f"- {error}" for error in semantic_errors)
-        )
-
-    generator = CodeGenerator(symbols)
-    return generator.generate_program(ast)
+    symbols, errors = check_program(ast)
+    if errors:
+        raise CodeGenerationError("Erros semânticos:\n" + "\n".join(f"- {error}" for error in errors))
+    return CodeGenerator(symbols).generate_program(ast)
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Uso: python src/codegen.py <ficheiro.pas>")
         sys.exit(1)
-
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        source = f.read()
-
-    ast = parse(source)
-
+    with open(sys.argv[1], "r", encoding="utf-8") as source_file:
+        ast = parse(source_file.read())
     try:
-        ewvm_code = generate_program(ast)
-        print(ewvm_code)
+        print(generate_program(ast), end="")
     except CodeGenerationError as error:
         print(error, file=sys.stderr)
         sys.exit(1)

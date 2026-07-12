@@ -44,7 +44,7 @@ class ArrayCompilerTests(unittest.TestCase):
 
     def test_parser_array_access(self):
         ast = parse(program("a: array[1..5] of integer;", "a[2] := 7;"))
-        self.assertEqual(ast[3][1][0][1], ("array_access", "a", ("int", 2)))
+        self.assertEqual(ast[4][1][0][1], ("array_access", "a", ("int", 2)))
 
     def test_symbol_table_array_metadata(self):
         ast = parse(program("a: array[1..5] of integer;", "a[1] := 2;"))

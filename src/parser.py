@@ -31,9 +31,65 @@ precedence = (
 
 def p_program(p):
     """
-    program : PROGRAM ID SEMI declarations compound_statement DOT
+    program : PROGRAM ID SEMI function_declarations declarations compound_statement DOT
     """
-    p[0] = ("program", p[2], p[4], p[5])
+    p[0] = ("program", p[2], p[5], p[4], p[6])
+
+
+def p_function_declarations_multiple(p):
+    """
+    function_declarations : function_declarations function_decl
+    """
+    p[0] = p[1] + [p[2]]
+
+
+def p_function_declarations_empty(p):
+    """
+    function_declarations : empty
+    """
+    p[0] = []
+
+
+def p_function_decl(p):
+    """
+    function_decl : FUNCTION ID LPAREN optional_parameters RPAREN COLON simple_type SEMI declarations compound_statement SEMI
+    """
+    p[0] = ("function_decl", p[2], p[4], p[7], p[9], p[10])
+
+
+def p_optional_parameters_some(p):
+    """
+    optional_parameters : parameter_groups
+    """
+    p[0] = p[1]
+
+
+def p_optional_parameters_empty(p):
+    """
+    optional_parameters : empty
+    """
+    p[0] = []
+
+
+def p_parameter_groups_multiple(p):
+    """
+    parameter_groups : parameter_groups SEMI parameter_group
+    """
+    p[0] = p[1] + p[3]
+
+
+def p_parameter_groups_single(p):
+    """
+    parameter_groups : parameter_group
+    """
+    p[0] = p[1]
+
+
+def p_parameter_group(p):
+    """
+    parameter_group : id_list COLON simple_type
+    """
+    p[0] = [("param", name, p[3]) for name in p[1]]
 
 
 # -------------------------
@@ -391,6 +447,20 @@ def p_expression_variable(p):
     expression : variable
     """
     p[0] = p[1]
+
+
+def p_expression_call_with_args(p):
+    """
+    expression : ID LPAREN expression_list RPAREN
+    """
+    p[0] = ("call", p[1], p[3])
+
+
+def p_expression_call_without_args(p):
+    """
+    expression : ID LPAREN RPAREN
+    """
+    p[0] = ("call", p[1], [])
 
 
 def p_expression_group(p):

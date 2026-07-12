@@ -1,8 +1,11 @@
 import argparse
 import sys
+from pprint import pprint
 
+from src.lexer import tokenize
 from src.parser import parse
 from src.codegen import generate_program, CodeGenerationError
+from src.semantic import check_program
 
 
 def compile_file(input_path):
@@ -22,6 +25,10 @@ def main():
         "input_file",
         help="Ficheiro Pascal de entrada"
     )
+    diagnostics = arg_parser.add_mutually_exclusive_group()
+    diagnostics.add_argument("--tokens", action="store_true", help="Mostrar tokens e terminar")
+    diagnostics.add_argument("--ast", action="store_true", help="Mostrar a AST e terminar")
+    diagnostics.add_argument("--symbols", action="store_true", help="Mostrar a tabela de símbolos e terminar")
 
     arg_parser.add_argument(
         "-o",
@@ -32,7 +39,29 @@ def main():
     args = arg_parser.parse_args()
 
     try:
-        ewvm_code = compile_file(args.input_file)
+        with open(args.input_file, "r", encoding="utf-8") as source_file:
+            source = source_file.read()
+
+        if args.tokens:
+            for token in tokenize(source):
+                print(token)
+            return
+
+        ast = parse(source)
+        if args.ast:
+            pprint(ast)
+            return
+
+        if args.symbols:
+            symbols, errors = check_program(ast)
+            pprint(symbols.diagnostic_view())
+            if errors:
+                raise CodeGenerationError(
+                    "Erros semânticos:\n" + "\n".join(f"- {error}" for error in errors)
+                )
+            return
+
+        ewvm_code = generate_program(ast)
 
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:

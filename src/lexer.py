@@ -6,6 +6,7 @@ import ply.lex as lex
 # Guardamos tudo em minúsculas porque pascal não distingue maiusculas/minusculas
 reserved = {
     "program": "PROGRAM",
+    "function": "FUNCTION",
     "var": "VAR",
     "begin": "BEGIN",
     "end": "END",
