@@ -102,59 +102,62 @@ t_COMMA = r","
 t_DOT = r"\."
 
 
-# Ignorar espaços e tabs
+# Ignorar espaços e tabs - não aparece a nova linha porque temos a função t_newline a contar
 t_ignore = " \t\r"
 
-
+# Suporta 3 tipos de comentários: { ... }, (* ... *) e // ... (até ao fim da linha)
 def t_COMMENT(t):
     r"\{[^}]*\}|\(\*(.|\n)*?\*\)|//[^\n]*"
-    t.lexer.lineno += t.value.count("\n")
+    t.lexer.lineno += t.value.count("\n") 
     pass
 
-
+# Literais string - ('Ola' ou 'D''Artagnan')
 def t_STRING_LITERAL(t):
     r"'([^'\n]|'')*'"
     # Remove as aspas exteriores e trata '' como uma aspa simples dentro da string
     t.value = t.value[1:-1].replace("''", "'")
     return t
 
-
+# Números inteiros - passamos de string para int
 def t_NUMBER(t):
     r"\d+"
     t.value = int(t.value)
     return t
 
-
+# Identificadores e palavras reservadas
 def t_ID(t):
     r"[A-Za-z_][A-Za-z0-9_]*"
     value = t.value.lower()
 
     # Se for palavra reservada, muda o tipo do token
-    # Caso contrário, é um identificador normal
+    # Caso contrário, é um id 
     t.type = reserved.get(value, "ID")
     t.value = value
     return t
 
-
+# contar novas linhas para manter o número de linhas 
 def t_newline(t):
     r"\n+"
     t.lexer.lineno += len(t.value)
 
-
+# caso nenhum token reconhece um carácter, levanta um erro de sintaxe
+# decidi parar a execução quando o lexer encontra um erro, 
+# mas com o skip(1) podia avançar para o próximo token e continuar a análise, devolvendo depois no final todos os erros encontrados, numa lista
 def t_error(t):
     raise SyntaxError(
         f"Carácter inválido '{t.value[0]}' na linha {t.lexer.lineno}"
     )
 
-
+# controi o lexer com base nas regras definidas acima
 lexer = lex.lex()
 
-
+# Função que recebe o código fonte e devolve uma lista de tokens
 def tokenize(source_code):
     lexer.input(source_code)
     return list(lexer)
 
-
+# Permite executar o lexer diretamente, sem passar pelo compilador completo
+# Foi útil para testar o lexer independetemente do parser e do resto do compilador
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Uso: python src/lexer.py <ficheiro.pas>")
