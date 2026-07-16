@@ -1,3 +1,11 @@
+"""
+Análise semântica do subconjunto de Pascal suportado.
+
+O módulo constrói a tabela de símbolos, organiza os âmbitos globais e locais
+e percorre a AST para validar declarações, tipos, chamadas, arrays e retornos
+de funções. ``check_program`` devolve a tabela de símbolos e os erros detetados.
+"""
+
 import sys
 from pprint import pprint
 
@@ -7,24 +15,46 @@ except ImportError:
     from parser import parse
 
 
+# =============================================================================
+# Tipos e tabela de símbolos
+# =============================================================================
+
 def type_name(type_node):
+    """
+    Obtém o nome textual de um nó de tipo simples da AST.
+    """
     if type_node[0] == "type":
         return type_node[1]
     raise ValueError(f"Tipo inválido: {type_node}")
 
 
 class SymbolTable(dict):
-    """Globais no próprio dicionário e metadados de funções em `functions`."""
+    """
+    Tabela de símbolos globais, complementada por um catálogo de funções.
+    """
 
     def __init__(self):
         super().__init__()
         self.functions = {}
 
     def diagnostic_view(self):
+        """
+        Devolve uma representação apropriada para diagnóstico e depuração.
+        """
         return {"globals": dict(self), "functions": self.functions}
 
 
+# =============================================================================
+# Declarações, funções e construção de âmbitos
+# =============================================================================
+
 def declare_variables(declarations, target, errors, scope_name, arrays_allowed=True):
+    """
+    Regista declarações de variáveis num determinado âmbito.
+
+    Os erros encontrados são acumulados em ``errors`` para permitir apresentar
+    vários diagnósticos numa única análise.
+    """
     for declaration in declarations:
         if declaration[0] != "var_decl":
             errors.append(f"Declaração desconhecida: {declaration}")
@@ -55,6 +85,9 @@ def declare_variables(declarations, target, errors, scope_name, arrays_allowed=T
 
 
 def build_symbol_table(declarations):
+    """
+    Constrói a tabela de símbolos das declarações globais.
+    """
     symbols = SymbolTable()
     errors = []
     declare_variables(declarations, symbols, errors, "âmbito global")
@@ -62,6 +95,12 @@ def build_symbol_table(declarations):
 
 
 def register_functions(function_declarations, symbols, errors):
+    """
+    Regista as assinaturas e os metadados das funções.
+
+    Nesta fase são validados nomes, parâmetros e tipos de retorno, mas os corpos
+    das funções são analisados posteriormente.
+    """
     for declaration in function_declarations:
         _, name, parameters, return_node, local_declarations, body = declaration
         if name == "length":
@@ -101,12 +140,22 @@ def register_functions(function_declarations, symbols, errors):
 
 
 def prepare_function_scopes(symbols, errors):
+    """
+    Constrói os âmbitos locais e o layout lógico dos frames das funções.
+
+    Os parâmetros recebem índices negativos, as variáveis locais índices
+    não negativos e o resultado da função ocupa o slot anterior aos argumentos.
+    """
     for name, function in symbols.functions.items():
         scope = {}
+        # Os argumentos encontram-se abaixo do frame pointer e são, por isso,
+        # representados por índices locais negativos.
         for index, param in enumerate(function["parameters"]):
             scope[param["name"]] = {
                 "kind": "parameter", "type": param["type"], "index": -(index + 1)
             }
+        # O subconjunto suportado permite variáveis locais escalares, mas não
+        # arrays locais, cuja alocação exigiria tratamento próprio no frame.
         local_symbols = {}
         declare_variables(
             function["local_declarations"], local_symbols, errors,
@@ -133,13 +182,27 @@ def prepare_function_scopes(symbols, errors):
             function["locals"][local_name] = entry
             scope[local_name] = entry
         function["scope"] = scope
+
+        # O caller reserva o slot de retorno imediatamente antes dos argumentos.
         function["return_index"] = -(len(function["parameters"]) + 1)
 
 
+# =============================================================================
+# Análise do programa e resolução de nomes
+# =============================================================================
+
 def check_program(ast):
+    """
+    Executa a análise semântica completa de uma AST de programa.
+
+    Returns:
+        Par ``(symbols, errors)`` com a tabela de símbolos e a lista de erros.
+    """
     if not ast or ast[0] != "program":
         return SymbolTable(), ["AST inválida: raiz não é um programa"]
     _, program_name, declarations, function_declarations, block = ast
+    # A análise é organizada em fases: globais, assinaturas de funções,
+    # âmbitos locais e, por fim, corpos executáveis.
     symbols, errors = build_symbol_table(declarations)
     if "length" in symbols:
         errors.append("A variável global 'length' entra em conflito com a função built-in")
@@ -155,12 +218,22 @@ def check_program(ast):
 
 
 def resolve_variable(name, symbols, context):
+    """
+    Resolve um identificador no âmbito local da função e, em seguida, no global.
+    """
     if context and name in context["function"]["scope"]:
         return context["function"]["scope"][name]
     return symbols.get(name)
 
 
+# =============================================================================
+# Validação de statements
+# =============================================================================
+
 def check_statement(statement, symbols, errors, context=None):
+    """
+    Valida recursivamente um statement da AST.
+    """
     kind = statement[0]
     if kind == "block":
         for stmt in statement[1]:
@@ -221,7 +294,17 @@ def check_statement(statement, symbols, errors, context=None):
         errors.append(f"Statement desconhecido: {statement}")
 
 
+# =============================================================================
+# Variáveis e acessos indexados
+# =============================================================================
+
 def check_variable(variable, symbols, errors, context=None, as_target=False, for_read=False):
+    """
+    Valida uma variável simples ou um acesso indexado e devolve o seu tipo.
+
+    O parâmetro ``as_target`` distingue utilizações como valor de utilizações como
+    destino de atribuição ou leitura.
+    """
     kind = variable[0]
     if kind == "var":
         name = variable[1]
@@ -245,6 +328,8 @@ def check_variable(variable, symbols, errors, context=None, as_target=False, for
         if index_type and index_type != "integer":
             errors.append(f"Índice de '{name}' tem de ser integer")
         if symbol["kind"] != "array":
+            # A indexação de strings produz o tipo interno ``char`` e é
+            # suportada apenas em contexto de leitura.
             if symbol["type"] == "string":
                 if as_target:
                     operation = "readln" if for_read else "atribuição"
@@ -264,7 +349,14 @@ def check_variable(variable, symbols, errors, context=None, as_target=False, for
     return None
 
 
+# =============================================================================
+# Chamadas e inferência de tipos
+# =============================================================================
+
 def infer_call_type(expression, symbols, errors, context):
+    """
+    Valida uma chamada de função e devolve o respetivo tipo de retorno.
+    """
     _, name, arguments = expression
     if name == "length":
         argument_types = [infer_expression_type(arg, symbols, errors, context) for arg in arguments]
@@ -298,6 +390,12 @@ def infer_call_type(expression, symbols, errors, context):
 
 
 def infer_expression_type(expression, symbols, errors, context=None):
+    """
+    Infere o tipo de uma expressão e valida a compatibilidade dos operadores.
+
+    O tipo interno ``char`` é usado apenas para representar caracteres obtidos
+    através da indexação de strings; não é um tipo declarável em Pascal.
+    """
     kind = expression[0]
     if kind == "int": return "integer"
     if kind == "string": return "string"
@@ -326,6 +424,8 @@ def infer_expression_type(expression, symbols, errors, context=None):
                 return None
             return "integer"
         if operator in {"=", "<>"}:
+            # Um carácter obtido por indexação pode ser comparado com um
+            # literal string de comprimento um.
             char_comparison = (
                 left_type == right_type == "char"
                 or (
@@ -356,6 +456,10 @@ def infer_expression_type(expression, symbols, errors, context=None):
     errors.append(f"Expressão desconhecida: {expression}")
     return None
 
+
+# =============================================================================
+# Execução independente
+# =============================================================================
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
